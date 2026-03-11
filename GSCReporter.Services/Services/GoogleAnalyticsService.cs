@@ -9,6 +9,9 @@ namespace GSCReporter.Services.Services;
 
 public class GoogleAnalyticsService : IGoogleAnalyticsService
 {
+    private const string OtherCountryName = "Other";
+    private const string PaidSearchChannelGroup = "Paid Search";
+
     private readonly GoogleAnalyticsConfig _config;
     private readonly ILogger<GoogleAnalyticsService> _logger;
     private readonly BetaAnalyticsDataClient _client;
@@ -138,6 +141,34 @@ public class GoogleAnalyticsService : IGoogleAnalyticsService
         }
     }
 
+    public async Task<PaidAdsReport> GetPaidAdsReportAsync(DateTime startDate, DateTime endDate)
+    {
+        try
+        {
+            _logger.LogInformation("Fetching Google Analytics paid search data for {StartDate} - {EndDate}",
+                startDate.ToString("yyyy-MM-dd"), endDate.ToString("yyyy-MM-dd"));
+
+            var (previousStartDate, previousEndDate) = CalculatePreviousPeriod(startDate, endDate);
+
+            var currentData = await FetchPaidSearchDataByCountryAsync(startDate, endDate);
+            var previousData = await FetchPaidSearchDataByCountryAsync(previousStartDate, previousEndDate);
+
+            var merged = MergePaidAdsData(currentData, previousData);
+
+            return new PaidAdsReport
+            {
+                StartDate = startDate,
+                EndDate = endDate,
+                StatisticsByCountry = merged
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching Google Analytics paid search data");
+            throw;
+        }
+    }
+
     private async Task<Dictionary<string, Dictionary<string, long>>> FetchAllTrafficDataByCountryAsync(DateTime startDate, DateTime endDate)
     {
         var propertyId = $"properties/{_config.PropertyId}";
@@ -204,6 +235,88 @@ public class GoogleAnalyticsService : IGoogleAnalyticsService
         return result;
     }
 
+    private async Task<Dictionary<string, PaidAdsStatistics>> FetchPaidSearchDataByCountryAsync(DateTime startDate, DateTime endDate)
+    {
+        var propertyId = $"properties/{_config.PropertyId}";
+
+        var request = new RunReportRequest
+        {
+            Property = propertyId,
+            DateRanges =
+            {
+                new DateRange
+                {
+                    StartDate = startDate.ToString("yyyy-MM-dd"),
+                    EndDate = endDate.ToString("yyyy-MM-dd")
+                }
+            },
+            Dimensions =
+            {
+                new Dimension { Name = "country" },
+                new Dimension { Name = "sessionDefaultChannelGroup" }
+            },
+            Metrics =
+            {
+                new Metric { Name = "sessions" },
+                new Metric { Name = "engagedSessions" }
+            },
+            DimensionFilter = new FilterExpression
+            {
+                Filter = new Filter
+                {
+                    FieldName = "sessionDefaultChannelGroup",
+                    StringFilter = new Filter.Types.StringFilter
+                    {
+                        MatchType = Filter.Types.StringFilter.Types.MatchType.Exact,
+                        Value = PaidSearchChannelGroup
+                    }
+                }
+            },
+            Limit = 10000
+        };
+
+        var response = await _client.RunReportAsync(request);
+        var result = new Dictionary<string, PaidAdsStatistics>(StringComparer.OrdinalIgnoreCase);
+        var otherStats = new PaidAdsStatistics { Country = OtherCountryName };
+
+        if (response.Rows == null)
+        {
+            return result;
+        }
+
+        foreach (var row in response.Rows)
+        {
+            var gaCountry = row.DimensionValues[0].Value;
+            var displayCountry = CountryDisplayNames.GetValueOrDefault(gaCountry, gaCountry);
+            var sessions = long.Parse(row.MetricValues[0].Value);
+            var engagedSessions = long.Parse(row.MetricValues[1].Value);
+
+            if (TargetMarkets.Countries.ContainsValue(displayCountry))
+            {
+                if (!result.TryGetValue(displayCountry, out var stats))
+                {
+                    stats = new PaidAdsStatistics { Country = displayCountry };
+                    result[displayCountry] = stats;
+                }
+
+                stats.Sessions += sessions;
+                stats.EngagedSessions += engagedSessions;
+            }
+            else
+            {
+                otherStats.Sessions += sessions;
+                otherStats.EngagedSessions += engagedSessions;
+            }
+        }
+
+        if (otherStats.Sessions > 0 || otherStats.EngagedSessions > 0)
+        {
+            result[OtherCountryName] = otherStats;
+        }
+
+        return result;
+    }
+
     private string? GetAICategory(string source)
     {
         if (string.IsNullOrWhiteSpace(source))
@@ -221,6 +334,39 @@ public class GoogleAnalyticsService : IGoogleAnalyticsService
         }
 
         return null;
+    }
+
+    private static Dictionary<string, PaidAdsStatistics> MergePaidAdsData(
+        Dictionary<string, PaidAdsStatistics> currentData,
+        Dictionary<string, PaidAdsStatistics> previousData)
+    {
+        var allCountries = currentData.Keys.Union(previousData.Keys, StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, PaidAdsStatistics>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var country in allCountries)
+        {
+            currentData.TryGetValue(country, out var current);
+            previousData.TryGetValue(country, out var previous);
+
+            result[country] = new PaidAdsStatistics
+            {
+                Country = country,
+                Sessions = current?.Sessions ?? 0,
+                EngagedSessions = current?.EngagedSessions ?? 0,
+                PreviousSessions = previous?.Sessions ?? 0,
+                PreviousEngagedSessions = previous?.EngagedSessions ?? 0
+            };
+        }
+
+        return result;
+    }
+
+    private static (DateTime PreviousStartDate, DateTime PreviousEndDate) CalculatePreviousPeriod(DateTime startDate, DateTime endDate)
+    {
+        var periodLength = (endDate - startDate).Days + 1;
+        var previousEndDate = startDate.AddDays(-1);
+        var previousStartDate = previousEndDate.AddDays(-(periodLength - 1));
+        return (previousStartDate, previousEndDate);
     }
 
     /// <summary>
@@ -255,7 +401,7 @@ public class GoogleAnalyticsService : IGoogleAnalyticsService
         // Add "Other" if there's any data
         if (otherSources.Count > 0)
         {
-            result["Other"] = otherSources;
+            result[OtherCountryName] = otherSources;
         }
 
         return result;

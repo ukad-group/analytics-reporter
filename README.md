@@ -1,6 +1,6 @@
 # GSC Reporter
 
-Automated Google Search Console and Google Analytics reporting that sends beautiful Slack reports on a schedule.
+Automated Google Search Console and Google Analytics reporting that sends structured Slack reports on a schedule.
 
 ## Why We Built This
 
@@ -11,6 +11,7 @@ After using it internally for a while, we realized this could be useful to other
 ## What It Does
 
 - Fetches search performance data from Google Search Console API
+- Fetches paid search sessions, engaged sessions, and engagement rate from GA4 for linked ads traffic
 - Tracks AI-driven traffic sources from Google Analytics (ChatGPT, Perplexity, Claude, etc.)
 - Compares metrics with the previous period and shows percentage changes
 - Sends formatted reports to Slack with clean tables
@@ -18,13 +19,16 @@ After using it internally for a while, we realized this could be useful to other
 
 Example Slack output:
 ```
-GSC Report: 01.11 - 14.11.2025 vs 18.10 - 31.10.2025
+Performance Report
 
-| Country     | Clicks      | Impressions | CTR   | Position | AI Sessions |
-|-------------|-------------|-------------|-------|----------|-------------|
-| USA         | 245 (+12%)  | 15.2K (-3%) | 1.6%  | 8.2      | 34          |
-| UK          | 89 (+5%)    | 4.1K (+8%)  | 2.2%  | 6.5      | 12          |
-| Others      | 156 (-2%)   | 8.9K (+1%)  | 1.8%  | 11.3     | 8           |
+01.11.2025 - 14.11.2025
+
+Country     | Organic                        | Ads                            | AI
+            | Clicks      | Impr          | CTR   | Sessions    | Eng.sessions  | Eng.rate | ChatGPT
+------------|-------------|---------------|-------|-------------|---------------|----------|----------
+USA         | 245 (+12%)  | 15.2K (-3%)   | 1.6%  | 64 (+8%)    | 40 (+5%)      | 62.4%    | 34 (+21%)
+UK          | 89 (+5%)    | 4.1K (+8%)    | 2.2%  | 21 (-5%)    | 12 (-8%)      | 58.1%    | 12 (+9%)
+Other       | 156 (-2%)   | 8.9K (+1%)    | 1.8%  | 48 (+3%)    | 27 (+2%)      | 55.9%    | 8 (0%)
 ```
 
 ## Architecture
@@ -85,6 +89,7 @@ Edit `appsettings.json` with your credentials:
 3. Create a service account and download the JSON key
 4. Add the service account email to your [Search Console property](https://search.google.com/search-console) (Settings > Users)
 5. Add the service account to your GA4 property (Admin > Property Access Management)
+6. Ensure your GA4 property is linked to Google Ads if you want the paid search section populated
 
 ### 3. Set Up Slack
 
@@ -150,6 +155,7 @@ Modify in [ReportFunction.cs](GSCReporter.AzureFunctions/Functions/ReportFunctio
 
 - **Period Comparison**: Automatically compares with the previous period of the same duration
 - **Market Segmentation**: Groups data by target countries with "Others" aggregation
+- **Paid vs Organic Split**: Shows organic search metrics from Search Console alongside paid search sessions, engaged sessions, and engagement rate from GA4
 - **AI Traffic Tracking**: Tracks sessions from ChatGPT, Perplexity, Claude, Gemini, and Copilot
 - **Graceful Degradation**: Google Analytics integration is optional - works with just Search Console
 - **Clean Formatting**: Large numbers formatted with K/M suffixes, percentage changes with +/- indicators

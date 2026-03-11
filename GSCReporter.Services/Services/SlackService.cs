@@ -12,8 +12,7 @@ public class SlackService : ISlackService
     private readonly ILogger<SlackService> _logger;
     private readonly SlackClient _slackClient;
 
-    // Major AI platforms to show as columns
-    private static readonly string[] MajorAIPlatforms = { "ChatGPT", "Perplexity", "Claude", "Gemini", "Copilot" };
+    private const string ChatGptSourceName = "ChatGPT";
 
     public SlackService(IOptions<AppConfig> config, ILogger<SlackService> logger)
     {
@@ -98,156 +97,93 @@ Average position in target markets: {marketPosition:F1}";
     {
         var targetCountries = TargetMarkets.Countries;
         var gscReport = report.SearchConsole;
+        var paidAds = report.PaidAds;
         var aiTraffic = report.AITraffic;
 
-        // Determine which AI columns to show (only those with data)
-        var aiColumnsToShow = GetAIColumnsWithData(aiTraffic);
-
-        // Build header
         var message = "\n\n🌍 *Markets Performance (vs Previous Period):*\n```\n";
 
-        // Dynamic header based on AI columns
-        var header = "Country     | Clicks      | Impressions   | CTR   ";
-        foreach (var aiCol in aiColumnsToShow)
-        {
-            header += $"| {aiCol,-10}";
-        }
-        message += header + "\n";
+        message += $"{"Country",-11} | {"Organic",-35} | {"Ads",-38} | {"AI",-9}\n";
+        message += $"{"",-11} | {"Clicks",-11} | {"Impr",-13} | {"CTR",-5} | {"Sessions",-11} | {"Eng.sessions",-13} | {"Eng.rate",-8} | {"ChatGPT",-9}\n";
+        message += "------------|-------------|---------------|-------|-------------|---------------|----------|-----------\n";
 
-        // Separator
-        var separator = "------------|-------------|---------------|-------";
-        foreach (var _ in aiColumnsToShow)
-        {
-            separator += "|----------";
-        }
-        message += separator + "\n";
-
-        // Build rows for each target country
-        var rows = new List<(string Country, MarketStatistics? Market, bool IsOther)>();
+        var rows = new List<(string Country, MarketStatistics? Organic, PaidAdsStatistics Ads, bool IsOther)>();
 
         foreach (var (countryCode, countryName) in targetCountries)
         {
             var market = gscReport?.MarketStatistics.FirstOrDefault(m =>
                 string.Equals(m.Country, countryCode, StringComparison.OrdinalIgnoreCase));
+            var ads = paidAds?.GetStatistics(countryName) ?? new PaidAdsStatistics { Country = countryName };
 
-            if (market != null)
+            rows.Add((countryName, market == null ? null : new MarketStatistics
             {
-                rows.Add((countryName, new MarketStatistics
-                {
-                    Country = countryName,
-                    TotalClicks = market.TotalClicks,
-                    TotalImpressions = market.TotalImpressions,
-                    AverageCTR = market.AverageCTR,
-                    AveragePosition = market.AveragePosition,
-                    PreviousTotalClicks = market.PreviousTotalClicks,
-                    PreviousTotalImpressions = market.PreviousTotalImpressions,
-                    PreviousAverageCTR = market.PreviousAverageCTR
-                }, false));
-            }
+                Country = countryName,
+                TotalClicks = market.TotalClicks,
+                TotalImpressions = market.TotalImpressions,
+                AverageCTR = market.AverageCTR,
+                AveragePosition = market.AveragePosition,
+                PreviousTotalClicks = market.PreviousTotalClicks,
+                PreviousTotalImpressions = market.PreviousTotalImpressions,
+                PreviousAverageCTR = market.PreviousAverageCTR
+            }, ads, false));
         }
 
-        // Calculate "Other" totals for GSC
+        var otherAds = paidAds?.GetStatistics("Other") ?? new PaidAdsStatistics { Country = "Other" };
+
         if (gscReport != null)
         {
             var otherMarkets = gscReport.MarketStatistics.Where(m =>
                 !targetCountries.ContainsKey(m.Country.ToLower())).ToList();
 
-            if (otherMarkets.Count > 0)
+            if (otherMarkets.Count > 0 || otherAds.Sessions > 0 || otherAds.EngagedSessions > 0)
             {
                 rows.Add(("Other", new MarketStatistics
                 {
                     Country = "Other",
                     TotalClicks = otherMarkets.Sum(m => m.TotalClicks),
                     TotalImpressions = otherMarkets.Sum(m => m.TotalImpressions),
-                    AverageCTR = otherMarkets.Average(m => m.AverageCTR),
+                    AverageCTR = otherMarkets.Sum(m => m.TotalImpressions) == 0
+                        ? 0
+                        : (double)otherMarkets.Sum(m => m.TotalClicks) / otherMarkets.Sum(m => m.TotalImpressions),
                     PreviousTotalClicks = otherMarkets.Sum(m => m.PreviousTotalClicks),
                     PreviousTotalImpressions = otherMarkets.Sum(m => m.PreviousTotalImpressions)
-                }, true));
+                }, otherAds, true));
             }
         }
-
-        // Sort by clicks descending, but "Other" always goes last
-        foreach (var row in rows.OrderBy(r => r.IsOther ? 1 : 0)
-                                .ThenByDescending(r => r.Market?.TotalClicks ?? 0))
+        else if (otherAds.Sessions > 0 || otherAds.EngagedSessions > 0)
         {
-            var market = row.Market;
+            rows.Add(("Other", null, otherAds, true));
+        }
+
+        foreach (var row in rows.OrderBy(r => r.IsOther ? 1 : 0)
+                                .ThenByDescending(r => (r.Organic?.TotalClicks ?? 0) + r.Ads.Sessions))
+        {
+            var organic = row.Organic;
             var countryName = row.Country;
 
-            var formattedClicks = market != null ? FormatNumberWithChange(market.TotalClicks, market.ClicksChangePercent) : "-";
-            var formattedImpr = market != null ? FormatNumberWithChange(market.TotalImpressions, market.ImpressionsChangePercent) : "-";
-            var ctr = market != null ? $"{market.AverageCTR:P1}" : "-";
+            var organicClicks = organic != null ? FormatNumberWithChange(organic.TotalClicks, organic.ClicksChangePercent) : "-";
+            var organicImpr = organic != null ? FormatNumberWithChange(organic.TotalImpressions, organic.ImpressionsChangePercent) : "-";
+            var organicCtr = organic != null ? $"{organic.AverageCTR:P1}" : "-";
 
-            var rowText = $"{countryName,-11} | {formattedClicks,-11} | {formattedImpr,-13} | {ctr,-5} ";
+            var adsSessions = FormatNumberWithChange(row.Ads.Sessions, row.Ads.SessionsChangePercent);
+            var adsEngagedSessions = FormatNumberWithChange(row.Ads.EngagedSessions, row.Ads.EngagedSessionsChangePercent);
+            var adsEngagementRate = $"{row.Ads.EngagementRate:P1}";
 
-            // Add AI traffic columns
-            foreach (var aiCol in aiColumnsToShow)
-            {
-                var sessions = aiTraffic?.GetSessions(countryName, aiCol) ?? 0;
-                var prevSessions = aiTraffic?.GetPreviousSessions(countryName, aiCol) ?? 0;
+            var chatGptSessions = aiTraffic?.GetSessions(countryName, ChatGptSourceName) ?? 0;
+            var previousChatGptSessions = aiTraffic?.GetPreviousSessions(countryName, ChatGptSourceName) ?? 0;
+            var chatGptChange = previousChatGptSessions == 0
+                ? 0
+                : ((double)(chatGptSessions - previousChatGptSessions) / previousChatGptSessions) * 100;
+            var chatGptText = chatGptSessions > 0 || previousChatGptSessions > 0
+                ? FormatNumberWithChange(chatGptSessions, chatGptChange)
+                : "-";
 
-                if (sessions > 0 || prevSessions > 0)
-                {
-                    // Skip if current is 0 (even if previous had data) - show as "-"
-                    if (sessions == 0)
-                    {
-                        rowText += $"| {"-",-10}";
-                    }
-                    else
-                    {
-                        var changePercent = prevSessions == 0 ? 0 : ((double)(sessions - prevSessions) / prevSessions) * 100;
-                        rowText += $"| {FormatNumberWithChange(sessions, changePercent),-10}";
-                    }
-                }
-                else
-                {
-                    rowText += $"| {"-",-10}";
-                }
-            }
+            var rowText = $"{countryName,-11} | {organicClicks,-11} | {organicImpr,-13} | {organicCtr,-5} | {adsSessions,-11} | {adsEngagedSessions,-13} | {adsEngagementRate,-8} | {chatGptText,-9}";
 
             message += rowText + "\n";
         }
 
         message += "```";
         return message;
-    }
-
-    private static List<string> GetAIColumnsWithData(AITrafficReport? aiTraffic)
-    {
-        if (aiTraffic == null)
-            return [];
-
-        var columnsWithData = new List<string>();
-
-        // Check each major platform for data - only if current period has sessions > 0
-        foreach (var platform in MajorAIPlatforms)
-        {
-            var hasCurrentData = aiTraffic.SessionsByCountryAndSource.Values
-                .Any(sources => sources.ContainsKey(platform) && sources[platform] > 0);
-
-            if (hasCurrentData)
-            {
-                columnsWithData.Add(platform);
-            }
-        }
-
-        // Check for "Other AI" data in current period
-        var otherAISources = aiTraffic.GetAllSources()
-            .Where(s => !MajorAIPlatforms.Contains(s))
-            .ToList();
-
-        if (otherAISources.Count > 0)
-        {
-            // Check if any "Other AI" source has current sessions > 0
-            var hasOtherData = aiTraffic.SessionsByCountryAndSource.Values
-                .Any(sources => otherAISources.Any(os => sources.ContainsKey(os) && sources[os] > 0));
-
-            if (hasOtherData)
-            {
-                columnsWithData.Add("Other");
-            }
-        }
-
-        return columnsWithData;
     }
 
     private string FormatNumber(long number)

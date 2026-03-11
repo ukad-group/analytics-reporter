@@ -60,6 +60,13 @@ public class ReportService : IReportService
             {
                 try
                 {
+                    _logger.LogInformation("Fetching paid search data from Google Analytics");
+                    aggregatedReport.PaidAds = await _googleAnalyticsService.GetPaidAdsReportAsync(startDate, endDate);
+                    var paidSessions = aggregatedReport.PaidAds.StatisticsByCountry.Values.Sum(v => v.Sessions);
+                    var paidEngagedSessions = aggregatedReport.PaidAds.StatisticsByCountry.Values.Sum(v => v.EngagedSessions);
+                    _logger.LogInformation("Paid search data retrieved: {PaidSessions} sessions, {PaidEngagedSessions} engaged sessions",
+                        paidSessions, paidEngagedSessions);
+
                     _logger.LogInformation("Fetching AI traffic data from Google Analytics");
                     aggregatedReport.AITraffic = await _googleAnalyticsService.GetAITrafficReportAsync(startDate, endDate);
                     var totalSessions = aggregatedReport.AITraffic.SessionsByCountryAndSource.Values.SelectMany(v => v.Values).Sum();
@@ -69,8 +76,8 @@ public class ReportService : IReportService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to fetch AI traffic data from Google Analytics. Continuing without it.");
-                    // Don't fail the entire report if GA data is unavailable
+                    _logger.LogWarning(ex, "Failed to fetch Google Analytics data. Continuing without paid search and AI traffic sections.");
+                    // Don't fail the entire report if GA data is unavailable.
                 }
             }
             else

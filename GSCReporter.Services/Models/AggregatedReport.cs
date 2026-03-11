@@ -18,7 +18,11 @@ public class AggregatedReport
     /// </summary>
     public AITrafficReport? AITraffic { get; set; }
 
+    /// <summary>
+    /// Google Analytics paid search data sourced from linked ads integrations.
+    /// </summary>
+    public PaidAdsReport? PaidAds { get; set; }
+
     // Future data sources can be added here:
     // public SocialMediaReport? SocialMedia { get; set; }
-    // public PaidAdsReport? PaidAds { get; set; }
 }

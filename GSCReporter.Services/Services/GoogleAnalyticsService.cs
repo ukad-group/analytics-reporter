@@ -23,6 +23,8 @@ public class GoogleAnalyticsService : IGoogleAnalyticsService
         { "chatgpt.com", "ChatGPT" },
         { "chat.openai.com", "ChatGPT" },
         { "openai.com", "ChatGPT" },
+        { "links.openai.com", "ChatGPT" },   // ChatGPT link-tracking redirect domain
+        { "cdn.openai.com", "ChatGPT" },
 
         // Perplexity
         { "perplexity.ai", "Perplexity" },
@@ -34,10 +36,12 @@ public class GoogleAnalyticsService : IGoogleAnalyticsService
         // Gemini / Google AI
         { "gemini.google.com", "Gemini" },
         { "bard.google.com", "Gemini" },
+        { "aistudio.google.com", "Gemini" },
 
         // Microsoft Copilot
         { "copilot.microsoft.com", "Copilot" },
-        { "bing.com/chat", "Copilot" },
+        { "bing.com", "Copilot" },
+        { "copilot.cloud.microsoft", "Copilot" },
 
         // Other AI tools
         { "you.com", "Other AI" },
@@ -45,7 +49,9 @@ public class GoogleAnalyticsService : IGoogleAnalyticsService
         { "poe.com", "Other AI" },
         { "huggingface.co", "Other AI" },
         { "meta.ai", "Other AI" },
-        { "pi.ai", "Other AI" }
+        { "pi.ai", "Other AI" },
+        { "grok.com", "Other AI" },
+        { "x.ai", "Other AI" }
     };
 
     // Map GA country names to display names (matching GSC report)
@@ -199,8 +205,12 @@ public class GoogleAnalyticsService : IGoogleAnalyticsService
 
         var response = await _client.RunReportAsync(request);
 
+        var totalRowCount = response.Rows?.Count ?? 0;
+        _logger.LogInformation("GA4 AI traffic query returned {TotalRows} rows", totalRowCount);
+
         // Result: Country (display name) -> AI Source -> Sessions
         var result = new Dictionary<string, Dictionary<string, long>>(StringComparer.OrdinalIgnoreCase);
+        var unmatchedSources = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
 
         if (response.Rows != null)
         {
@@ -213,7 +223,12 @@ public class GoogleAnalyticsService : IGoogleAnalyticsService
                 // Check if this is an AI source
                 var aiCategory = GetAICategory(source);
                 if (aiCategory == null)
+                {
+                    // Accumulate unmatched sources for diagnostics (top contributors)
+                    unmatchedSources.TryGetValue(source, out var prev);
+                    unmatchedSources[source] = prev + sessions;
                     continue;
+                }
 
                 // Convert GA country name to display name
                 var displayCountry = CountryDisplayNames.GetValueOrDefault(gaCountry, gaCountry);
@@ -231,6 +246,16 @@ public class GoogleAnalyticsService : IGoogleAnalyticsService
                 result[displayCountry][aiCategory] += sessions;
             }
         }
+
+        var matchedTotal = result.Values.SelectMany(v => v.Values).Sum();
+        _logger.LogInformation("AI traffic matching: {MatchedSessions} sessions matched to AI sources", matchedTotal);
+
+        // Log top unmatched sources so we can diagnose missing AI platforms
+        var topUnmatched = unmatchedSources
+            .OrderByDescending(kv => kv.Value)
+            .Take(10)
+            .Select(kv => $"{kv.Key}({kv.Value})");
+        _logger.LogDebug("Top unmatched sources (not classified as AI): {Sources}", string.Join(", ", topUnmatched));
 
         return result;
     }
